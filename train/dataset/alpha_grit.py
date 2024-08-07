@@ -3,7 +3,7 @@ import os
 import random
 from tqdm import tqdm
 from torch.utils.data import Dataset
-from mask_image import ImageNet_Masked
+from dataset.mask_image import ImageNet_Masked
 from pycocotools.coco import COCO
 from pycocotools import mask as maskUtils
 from PIL import Image
@@ -21,8 +21,14 @@ import sys
 import shutil
 from PIL import Image
 
-def get_file(url):
-    return #TODO: get file path from local directory
+def get_file(filepath):
+    try:
+        with open(filepath, 'rb') as f:
+            return f.read()
+    except FileNotFoundError:
+        raise FileNotFoundError(f"File not found: {filepath}")
+    except Exception as e:
+        raise IOError(f"Error reading file: {filepath}. Error: {str(e)}")
 
 clip_standard_transform = transforms.Compose([
     transforms.ToTensor(), 
@@ -67,7 +73,7 @@ def crop_center(img, croph, cropw):
     return img[starth:starth+croph, startw:startw+cropw, :]
 
 class Alpha_GRIT(Dataset):
-    def __init__(self, ids_file='grit_1m_ids.pkl', root_pth='grit-1m/', common_pair=0.0, hi_res=False, subnum=None):
+    def __init__(self, ids_file, root_pth, common_pair=0.0, hi_res=False, subnum=None):
         if subnum is not None:
             self.ids = pickle.load(open(ids_file, 'rb'))[:subnum]
         else:

@@ -20,8 +20,8 @@ import numpy as np
 import copy
 from transformers import AutoProcessor
 from nltk.corpus import wordnet
-from bg_aug import get_bkgd
-import jax
+# from bg_aug import get_bkgd
+# import jax
 import random
 
 clip_standard_transform = transforms.Compose([

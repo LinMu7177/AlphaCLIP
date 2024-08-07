@@ -10,3 +10,6 @@ thumbs.db
 .idea
 checkpoints/*
 *.pth
+log/*
+*.pkl
+*.out

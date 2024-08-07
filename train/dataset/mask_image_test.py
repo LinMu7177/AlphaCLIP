@@ -74,12 +74,15 @@ def masked_crop(image: np.array, bbox_xywh: np.array, bi_mask: np.array, crop_sc
     return cropped_image, cropped_mask
 
 class COCO_Masked_Test(Dataset):
-    def __init__(self, ann_file="data/coco/annotations/instances_val2017.json",  masked_color=[255, 255, 255], root_directory="data/coco/val2017", hi_res=False):
+    def __init__(self, ann_file="/data2/shared/coco/coco_2017/Annotations/annotations_2017/instances_val2017.json",  masked_color=[255, 255, 255], root_directory="/data2/shared/coco/coco_2017/Images/val2017", hi_res=False):
         self.masked_color = masked_color
         self.coco = COCO(annotation_file=ann_file)
         self.image_directory = root_directory
         self.crop_scale = 1.5
+
+        # self.anns_list = list(self.coco.anns.keys())
         self.anns_list = list(self.coco.anns.keys())
+
         self.index2id = [x['id'] for x in self.coco.cats.values()]
         self.id2index = dict()
         for i, item in enumerate(self.index2id):

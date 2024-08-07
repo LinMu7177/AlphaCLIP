@@ -1,22 +1,10 @@
 import json
-import os
-import random
-from tqdm import tqdm
 from torch.utils.data import Dataset
-from pycocotools.coco import COCO
 from pycocotools import mask as maskUtils
-from PIL import Image
 import cv2
-import random
 from torchvision import transforms
 from tqdm import tqdm
-
-import pickle
-import torch
 import numpy as np
-import copy
-import sys
-import shutil
 from PIL import Image
 from nltk.corpus import wordnet
 
@@ -66,9 +54,9 @@ def crop_center(img, croph, cropw):
     return img[starth:starth+croph, startw:startw+cropw, :]
 
 class Imagenet_S(Dataset):
-    def __init__(self, ann_file='data/imagenet_s/imagenet_919.json', hi_res=False, all_one=False):
+    def __init__(self, ann_file='/data2/shared/imagenet-s/data/imagenet_919.json', hi_res=False, all_one=False):
         self.anns = json.load(open(ann_file, 'r'))
-        self.root_pth = 'data/imagenet_s/'
+        self.root_pth = '/data2/shared/imagenet-s/data/'
         cats = []
         for ann in self.anns:
             if ann['category_word'] not in cats:
