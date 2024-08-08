@@ -15,6 +15,7 @@ from scheduler import cosine_lr
 from dataset.imagenet_s_test import Imagenet_S
 from dataset.mask_image_test import COCO_Masked_Test
 from dataset.alpha_grit import Alpha_GRIT
+from datetime import datetime
 
 simple_templates = ['a photo of a {}.']
 
@@ -52,10 +53,13 @@ class CLIP_Clean_Train():
 
     def get_logdir(self, exp_name: str, lr: float, weight_decay: float, warmup_length: int, log_scale: float,
                    lora_rank: int, common_pair: float, para_gamma: float, epoch_num: int, subnum: int) -> str:
-        if exp_name == "auto":
-            logdir = f"log/grit_1m/lr={lr}_wd={weight_decay}_wl={warmup_length}_logs={log_scale}_L14_336_lora={lora_rank}_cp={common_pair}_para_gamma={para_gamma}_e{epoch_num}_16xb_subnum={subnum}"
-        else:
-            logdir = exp_name
+        date_str = datetime.now().strftime("%Y%m%d")
+        base_logdir = f"log/{date_str}_grit_1m/lr={lr}_wd={weight_decay}_wl={warmup_length}_logs={log_scale}_L14_336_lora={lora_rank}_cp={common_pair}_para_gamma={para_gamma}_e{epoch_num}_16xb_subnum={subnum}"
+        logdir = base_logdir
+        suffix = 1
+        while os.path.exists(logdir):
+            logdir = f"{base_logdir}_{suffix}"
+            suffix += 1
         return logdir
 
     def configure_optimizer(self, lora_rank: int, para_gamma: float, lr: float):
