@@ -1,26 +1,15 @@
-import json
-import os
-import random
-from tqdm import tqdm
-from torch.utils.data import Dataset
-from dataset.mask_image import ImageNet_Masked
-from pycocotools.coco import COCO
-from pycocotools import mask as maskUtils
-from PIL import Image
 import cv2
 import random
+import json
+import pickle
+import numpy as np
+from PIL import Image
 from torchvision import transforms
-from tqdm import tqdm
+from torch.utils.data import Dataset
+from pycocotools import mask as maskUtils
+
 PIXEL_MEAN = (0.48145466, 0.4578275, 0.40821073)
 MASK_FILL = [int(255 * c) for c in PIXEL_MEAN]
-import pickle
-import torch
-import numpy as np
-import copy
-import sys
-import shutil
-from PIL import Image
-
 def get_file(filepath):
     try:
         with open(filepath, 'rb') as f:

@@ -79,7 +79,7 @@ def main():
 
     tar_files = generate_file_list(args.input_dir, args.start, args.end)
 
-    sam_checkpoint = "/data2/shared/models/SAM/SAM-vit-h/sam_vit_h_4b8939.pth"
+    sam_checkpoint = "/mnt/shared/models/SAM/SAM-vit-h/sam_vit_h_4b8939.pth"
     model_type = "vit_h"
     device = f"cuda:{args.gpu_id}"
 

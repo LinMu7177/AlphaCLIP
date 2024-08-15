@@ -11,5 +11,4 @@ thumbs.db
 checkpoints/*
 *.pth
 log/*
-*.pkl
 *.out

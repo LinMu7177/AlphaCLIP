@@ -1,24 +1,18 @@
-import json
 import os
-import random
-
-from torch.utils.data import Dataset
-from pycocotools.coco import COCO
-from pycocotools import mask as maskUtils
+import numpy as np
+from tqdm import tqdm
 from lvis import LVIS
 from PIL import Image
 from PIL import ImageFile
+from torch.utils.data import Dataset
+from pycocotools.coco import COCO
+from torchvision import transforms
+
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 Image.MAX_IMAGE_PIXELS = None
-from tqdm import tqdm
-from torchvision import transforms
-from tqdm import tqdm
-import pickle
-import cv2
-import torch
-import numpy as np
-import copy
-from transformers import AutoProcessor
+
+
+
 PIXEL_MEAN = (0.48145466, 0.4578275, 0.40821073)
 MASK_FILL = [int(255 * c) for c in PIXEL_MEAN]
 clip_standard_transform = transforms.Compose([
@@ -74,7 +68,9 @@ def masked_crop(image: np.array, bbox_xywh: np.array, bi_mask: np.array, crop_sc
     return cropped_image, cropped_mask
 
 class COCO_Masked_Test(Dataset):
-    def __init__(self, ann_file="/data2/shared/coco/coco_2017/Annotations/annotations_2017/instances_val2017.json",  masked_color=[255, 255, 255], root_directory="/data2/shared/coco/coco_2017/Images/val2017", hi_res=False):
+    def __init__(self, ann_file="/mnt/shared/data/coco/annotations/annotations_2017/instances_val2017.json",
+                 masked_color=[255, 255, 255], root_directory="/mnt/shared/data/coco/images/val2017",
+                 hi_res=False):
         self.masked_color = masked_color
         self.coco = COCO(annotation_file=ann_file)
         self.image_directory = root_directory

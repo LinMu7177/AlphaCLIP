@@ -54,9 +54,9 @@ def crop_center(img, croph, cropw):
     return img[starth:starth+croph, startw:startw+cropw, :]
 
 class Imagenet_S(Dataset):
-    def __init__(self, ann_file='/data2/shared/imagenet-s/data/imagenet_919.json', hi_res=False, all_one=False):
+    def __init__(self, ann_file='/mnt/shared/data/imagenet-s/imagenet_919.json', hi_res=False, all_one=False):
         self.anns = json.load(open(ann_file, 'r'))
-        self.root_pth = '/data2/shared/imagenet-s/data/'
+        self.root_pth = '/mnt/shared/data/imagenet-s/'
         cats = []
         for ann in self.anns:
             if ann['category_word'] not in cats:

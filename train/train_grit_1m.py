@@ -1,3 +1,5 @@
+import sys
+sys.path.append('../')
 import os
 import subprocess
 import argparse
@@ -20,14 +22,14 @@ from datetime import datetime
 simple_templates = ['a photo of a {}.']
 
 class CLIP_Clean_Train():
-    def __init__(self, local_rank=3, lr=4e-5, weight_decay=0.02, log_scale=4.6052, lora_rank=-1, common_pair=0.0,
+    def __init__(self, local_rank=0, lr=4e-5, weight_decay=0.02, log_scale=4.6052, lora_rank=-1, common_pair=0.0,
                  para_gamma=0.01, exp_name="auto", warmup_length=200, epoch_num=1, subnum=10000, distributed=False):
         self.local_rank = local_rank
         self.distributed = distributed
         self.model = self.load_model(lora_rank)
         torch.cuda.set_device(device=f'cuda:{local_rank}')
         self.model = self.model.float().cuda()
-        self.batch_size = 12
+        self.batch_size = 48
         self.num_epoch = epoch_num
         self.lr = lr
         self.subnum = subnum
@@ -126,7 +128,8 @@ class CLIP_Clean_Train():
         running_loss = 0.0
         num_batches_per_epoch = len(dataloader)
         eval_step = int(num_batches_per_epoch * eval_ratio)
-        for i, (images, masks, texts) in enumerate(tqdm(dataloader, disable=(dist.get_rank() != 0 if dist.is_initialized() else False))):
+        for i, (images, masks, texts) in enumerate(
+                tqdm(dataloader, disable=(dist.get_rank() != 0 if dist.is_initialized() else False))):
             step = num_batches_per_epoch * epoch + i
             if step < start_iter:
                 continue
@@ -148,13 +151,13 @@ class CLIP_Clean_Train():
             running_loss += loss.item()
             batch_num = i + 1
             if (i + 1) % 500 == 0:
-                self.log_metrics(running_loss, 500, step, test_loaders)
+                self.log_metrics(running_loss, 500, step)
                 running_loss = 0.0
             if eval_step > 0 and (i + 1) % eval_step == 0:
-                self.evaluate(step, test_loaders)
+                self.evaluate(step, test_loaders, save_checkpoint=True)
         return running_loss / batch_num
 
-    def log_metrics(self, running_loss, interval, step, test_loaders):
+    def log_metrics(self, running_loss, interval, step):
         loss = running_loss / interval
         loss = torch.tensor(loss).cuda()
         if dist.is_initialized():
@@ -170,8 +173,8 @@ class CLIP_Clean_Train():
             print(f"train logit_scale step {step}: {self.model.logit_scale.item()}")
             print(f"train loss step {step}: {loss}")
             print("=====================================")
-            if step % 500 == 0 and step != 0:
-                torch.save(self.model.visual.state_dict(), self.ckptdir + f'iter_{step}.pth')
+
+            # torch.save(self.model.visual.state_dict(), self.ckptdir + f'iter_{step}.pth')
 
     @torch.no_grad()
     def test_epoch(self, dataloader, desc="Evaluating"):
@@ -195,7 +198,8 @@ class CLIP_Clean_Train():
                     temp_corr_dict[target_item][2] += 1
         return temp_corr_dict
 
-    def evaluate(self, step, test_loaders):
+    def evaluate(self, step, test_loaders, save_checkpoint=False):
+        torch.cuda.empty_cache()
         self.model.visual.eval()
         for test_name, test_loader in test_loaders.items():
             tqdm.write(f"Zeroshot Classifier Evaluating {test_name} at step {step}")
@@ -204,7 +208,16 @@ class CLIP_Clean_Train():
             output = self.gather_output(temp_corr_dict)
             if not dist.is_initialized() or dist.get_rank() == 0:
                 self.log_test_results(test_name, step, output)
+
+        if save_checkpoint:
+            self.save_checkpoint(step)
+
         self.model.visual.train()
+        torch.cuda.empty_cache()
+
+    def save_checkpoint(self, step):
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            torch.save(self.model.visual.state_dict(), self.ckptdir + f'iter_{step}.pth')
 
     def gather_output(self, temp_corr_dict):
         if dist.is_initialized():
@@ -251,7 +264,7 @@ class CLIP_Clean_Train():
         testset = Imagenet_S()
         self.text_embeddings = self.zeroshot_classifier(testset.classes, simple_templates, self.local_rank)
         sampler = DistributedSampler(dataset=testset, shuffle=False)
-        testloader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size, sampler=sampler, num_workers=0, pin_memory=True)
+        testloader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 20, sampler=sampler, num_workers=2, pin_memory=True)
         with torch.no_grad():
             temp_corr_dict = self.test_epoch(testloader, desc="Testing")
             output = self.gather_output(temp_corr_dict)
@@ -264,22 +277,27 @@ class CLIP_Clean_Train():
                 print("=====================================")
         return
 
-    def train(self, common_pair=False, resume=False, amp=False, warmup_length=200, eval_ratio=0.2):
+    def train(self, common_pair=False, resume=False, amp=False, warmup_length=200, eval_ratio=0.1):
         testset_image_s = Imagenet_S(hi_res=True)
         testset_image_s_all_one = Imagenet_S(hi_res=True, all_one=True)
         testset_coco = COCO_Masked_Test(hi_res=True)
 
         # demo dataset
-        # trainset = Alpha_GRIT(ids_file='grit_1m_keys_lightly.pkl',
-        #                       root_pth='/data2/shared/grit/grit-1m-img-with-mask/',
-        #                       common_pair=common_pair, subnum=self.subnum, hi_res=True)
-        trainset = Alpha_GRIT(ids_file='grit_coyo_1_keys.pkl', root_pth='/data2/user_data/wenwen/data/GRIT/train/coyo_1_train/',
+        trainset = Alpha_GRIT(ids_file='grit_1m_keys_lightly.pkl',
+                              root_pth='/mnt/user_data/wenwen/data/GRIT/train/grit-1m-img-with-mask/',
                               common_pair=common_pair, subnum=self.subnum, hi_res=True)
+        # trainset = Alpha_GRIT(ids_file='grit_coyo_1_keys.pkl',
+        #                       root_pth='/mnt/user_data/wenwen/data/GRIT/train/coyo_1_train/',
+        #                       common_pair=common_pair, subnum=self.subnum, hi_res=True)
 
         test_loaders = self.setup_test_loaders(testset_coco, testset_image_s, testset_image_s_all_one)
         train_loader = self.setup_train_loader(trainset)
         self.scheduler = cosine_lr(self.optimizer, base_lr=self.lr, warmup_length=warmup_length, steps=5000, para_gamma=self.para_gamma)
         start_epoch, resume_iter = self.resume_training(resume, train_loader)
+
+        print("Evaluating model before training starts...")
+        self.evaluate(0, test_loaders)
+
         for epoch in range(start_epoch, self.num_epoch):
             if (trainset.__len__() * epoch) > 4000 * self.batch_size * 256:
                 break
@@ -289,13 +307,13 @@ class CLIP_Clean_Train():
         test_loaders = {}
         for name, testset in zip(['COCO', 'Imagenet-S', 'Imagenet-S_all_one'], testsets):
             test_sampler = torch.utils.data.SequentialSampler(testset)
-            test_loader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size, sampler=test_sampler, num_workers=0, pin_memory=True)
+            test_loader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 20, sampler=test_sampler, num_workers=2, pin_memory=True)
             test_loaders[name] = test_loader
         return test_loaders
 
     def setup_train_loader(self, trainset):
         train_sampler = torch.utils.data.SequentialSampler(trainset)
-        train_loader = torch.utils.data.DataLoader(trainset, batch_size=self.batch_size, sampler=train_sampler, num_workers=0, pin_memory=True)
+        train_loader = torch.utils.data.DataLoader(trainset, batch_size=self.batch_size, sampler=train_sampler, num_workers=2, pin_memory=True)
         return train_loader
 
     def resume_training(self, resume, train_loader):

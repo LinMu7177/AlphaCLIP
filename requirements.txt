@@ -1,5 +1,12 @@
 ftfy
 regex
 tqdm
-torch
-torchvision
+torch==2.4.0+cu118
+torchvision==0.19.0+cu118
+tensorboard
+six
+pycocotools
+opencv-python
+nltk
+lvis
+transformers
