@@ -29,7 +29,7 @@ class CLIP_Clean_Train():
         self.model = self.load_model(lora_rank)
         torch.cuda.set_device(device=f'cuda:{local_rank}')
         self.model = self.model.float().cuda()
-        self.batch_size = 48
+        self.batch_size = 12
         self.num_epoch = epoch_num
         self.lr = lr
         self.subnum = subnum
@@ -283,12 +283,22 @@ class CLIP_Clean_Train():
         testset_coco = COCO_Masked_Test(hi_res=True)
 
         # demo dataset
-        trainset = Alpha_GRIT(ids_file='grit_1m_keys_lightly.pkl',
-                              root_pth='/mnt/user_data/wenwen/data/GRIT/train/grit-1m-img-with-mask/',
-                              common_pair=common_pair, subnum=self.subnum, hi_res=True)
+        # trainset = Alpha_GRIT(ids_file='grit_1m_keys_lightly.pkl',
+        #                       root_pth='/mnt/user_data/wenwen/data/GRIT/train/grit-1m-img-with-mask/',
+        #                       common_pair=common_pair, subnum=self.subnum, hi_res=True)
         # trainset = Alpha_GRIT(ids_file='grit_coyo_1_keys.pkl',
         #                       root_pth='/mnt/user_data/wenwen/data/GRIT/train/coyo_1_train/',
         #                       common_pair=common_pair, subnum=self.subnum, hi_res=True)
+
+        # The data path on the 4090 server
+        trainset = Alpha_GRIT(ids_file='grit_1m_keys_lightly.pkl',
+                              root_pth='/data2/shared/grit/grit-1m-img-with-mask/',
+                              common_pair=common_pair, subnum=self.subnum, hi_res=True)
+
+        # trainset = Alpha_GRIT(ids_file='grit_coyo_1_keys.pkl',
+        #                       root_pth='/data2/shared/data/GRIT/train/coyo_1_train/',
+        #                       common_pair=common_pair, subnum=self.subnum, hi_res=True)
+
 
         test_loaders = self.setup_test_loaders(testset_coco, testset_image_s, testset_image_s_all_one)
         train_loader = self.setup_train_loader(trainset)

@@ -1,8 +1,7 @@
+loralib
 ftfy
 regex
 tqdm
-torch==2.4.0+cu118
-torchvision==0.19.0+cu118
 tensorboard
 six
 pycocotools
