@@ -23,17 +23,19 @@ simple_templates = ['a photo of a {}.']
 
 class CLIP_Clean_Train():
     def __init__(self, local_rank=0, lr=4e-5, weight_decay=0.02, log_scale=4.6052, lora_rank=-1, common_pair=0.0,
-                 para_gamma=0.01, exp_name="auto", warmup_length=200, epoch_num=1, subnum=10000, distributed=False):
+                 para_gamma=0.01, exp_name="auto", warmup_length=200, epoch_num=1, subnum=10000, distributed=False, batch_size=8, resume=False, resume_log_dir=None):
+
         self.local_rank = local_rank
         self.distributed = distributed
         self.model = self.load_model(lora_rank)
         torch.cuda.set_device(device=f'cuda:{local_rank}')
         self.model = self.model.float().cuda()
-        self.batch_size = 12
+        self.batch_size = batch_size
         self.num_epoch = epoch_num
         self.lr = lr
         self.subnum = subnum
-        self.logdir = self.get_logdir(exp_name, lr, weight_decay, warmup_length, log_scale, lora_rank, common_pair, para_gamma, epoch_num, subnum)
+        self.resume_log_dir = resume_log_dir
+        self.logdir = self.get_logdir(exp_name, lr, weight_decay, warmup_length, log_scale, lora_rank, common_pair, para_gamma, epoch_num, subnum, resume)
         self.ckptdir = os.path.join(self.logdir, "ckpt/")
         os.makedirs(self.ckptdir, exist_ok=True)
         self.writer = SummaryWriter(self.logdir)
@@ -54,7 +56,12 @@ class CLIP_Clean_Train():
         return model
 
     def get_logdir(self, exp_name: str, lr: float, weight_decay: float, warmup_length: int, log_scale: float,
-                   lora_rank: int, common_pair: float, para_gamma: float, epoch_num: int, subnum: int) -> str:
+                   lora_rank: int, common_pair: float, para_gamma: float, epoch_num: int, subnum: int, resume: bool) -> str:
+        if resume:
+            if self.resume_log_dir is None:
+                raise ValueError("Please specify the logdir for resume training.")
+            else:
+                return self.resume_log_dir
         date_str = datetime.now().strftime("%Y%m%d")
         base_logdir = f"log/{date_str}_grit_1m/lr={lr}_wd={weight_decay}_wl={warmup_length}_logs={log_scale}_L14_336_lora={lora_rank}_cp={common_pair}_para_gamma={para_gamma}_e{epoch_num}_16xb_subnum={subnum}"
         logdir = base_logdir
@@ -291,13 +298,13 @@ class CLIP_Clean_Train():
         #                       common_pair=common_pair, subnum=self.subnum, hi_res=True)
 
         # The data path on the 4090 server
-        trainset = Alpha_GRIT(ids_file='grit_1m_keys_lightly.pkl',
-                              root_pth='/data2/shared/grit/grit-1m-img-with-mask/',
-                              common_pair=common_pair, subnum=self.subnum, hi_res=True)
-
-        # trainset = Alpha_GRIT(ids_file='grit_coyo_1_keys.pkl',
-        #                       root_pth='/data2/shared/data/GRIT/train/coyo_1_train/',
+        # trainset = Alpha_GRIT(ids_file='grit_1m_keys_lightly.pkl',
+        #                       root_pth='/data2/shared/grit/grit-1m-img-with-mask/',
         #                       common_pair=common_pair, subnum=self.subnum, hi_res=True)
+
+        trainset = Alpha_GRIT(ids_file='grit_coyo_1_keys.pkl',
+                              root_pth='/data2/user_data/wenwen/data/GRIT/train/coyo_1_train/',
+                              common_pair=common_pair, subnum=self.subnum, hi_res=True)
 
 
         test_loaders = self.setup_test_loaders(testset_coco, testset_image_s, testset_image_s_all_one)
@@ -305,8 +312,8 @@ class CLIP_Clean_Train():
         self.scheduler = cosine_lr(self.optimizer, base_lr=self.lr, warmup_length=warmup_length, steps=5000, para_gamma=self.para_gamma)
         start_epoch, resume_iter = self.resume_training(resume, train_loader)
 
-        print("Evaluating model before training starts...")
-        self.evaluate(0, test_loaders)
+        # print("Evaluating model before training starts...")
+        # self.evaluate(0, test_loaders)
 
         for epoch in range(start_epoch, self.num_epoch):
             if (trainset.__len__() * epoch) > 4000 * self.batch_size * 256:
@@ -315,7 +322,7 @@ class CLIP_Clean_Train():
 
     def setup_test_loaders(self, *testsets):
         test_loaders = {}
-        for name, testset in zip(['COCO', 'Imagenet-S', 'Imagenet-S_all_one'], testsets):
+        for name, testset in zip(['Imagenet-S'], testsets):
             test_sampler = torch.utils.data.SequentialSampler(testset)
             test_loader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 20, sampler=test_sampler, num_workers=2, pin_memory=True)
             test_loaders[name] = test_loader
@@ -329,7 +336,8 @@ class CLIP_Clean_Train():
     def resume_training(self, resume, train_loader):
         start_epoch, resume_iter = 0, 0
         if resume and os.listdir(self.ckptdir):
-            resume_pth = os.listdir(self.ckptdir)[-1]
+            # resume_pth = os.listdir(self.ckptdir)[-1]
+            resume_pth = max(os.listdir(self.ckptdir), key=lambda x: int(x[5:-4]))
             resume_iter = int(resume_pth[5:-4])
             start_epoch = resume_iter // len(train_loader)
             map_location = {'cuda:0': f'cuda:{self.local_rank}'}
@@ -376,11 +384,15 @@ if __name__ == "__main__":
     parser.add_argument("--exp_name", default="auto", type=str, help="specify experiment name.")
     parser.add_argument("--warmup_length", default=200, type=int, help="warmup_length.")
     parser.add_argument("--epoch_num", default=4, type=int, help="number of epochs.")
-    parser.add_argument("--subnum", default=1e4, type=float, help="sub data number.")
+    parser.add_argument("--subnum", default=None, type=float, help="sub data number.")
     parser.add_argument("--distributed", action="store_true", help="Enable distributed training.")
     parser.add_argument("--eval_ratio", default=0.1, type=float, help="Evaluation ratio during each epoch.")
+    parser.add_argument("--local_rank", default=0, type=int)
+    parser.add_argument("--batch_size", default=8, type=int)
+    parser.add_argument("--resume_log_dir", default="auto", type=str)
     args = parser.parse_args()
-    local_rank = setup_distributed(distributed=args.distributed)
+    # local_rank = setup_distributed(distributed=args.distributed)
+    local_rank = args.local_rank
     trainer = CLIP_Clean_Train(
         local_rank=local_rank,
         lr=args.lr,
@@ -392,6 +404,9 @@ if __name__ == "__main__":
         exp_name=args.exp_name,
         warmup_length=args.warmup_length,
         epoch_num=args.epoch_num,
-        subnum=int(args.subnum)
+        subnum=int(args.subnum) if args.subnum is not None else None,
+        batch_size=args.batch_size,
+        resume=args.resume,
+        resume_log_dir=args.resume_log_dir
     )
     trainer.train(common_pair=args.common_pair, resume=args.resume, amp=args.amp, warmup_length=args.warmup_length, eval_ratio=args.eval_ratio)
