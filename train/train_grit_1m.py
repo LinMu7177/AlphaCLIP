@@ -22,12 +22,12 @@ from datetime import datetime
 simple_templates = ['a photo of a {}.']
 
 class CLIP_Clean_Train():
-    def __init__(self, local_rank=0, lr=4e-5, weight_decay=0.02, log_scale=4.6052, lora_rank=-1, common_pair=0.0,
-                 para_gamma=0.01, exp_name="auto", warmup_length=200, epoch_num=1, subnum=10000, distributed=False, batch_size=8, resume=False, resume_log_dir=None):
+    def __init__(self, local_rank=0, lr=2e-4, weight_decay=0.02, log_scale=4.6052, model_name="ViT-L/14@336px", lora_rank=-1, common_pair=0.0,
+                 para_gamma=0.01, exp_name="auto", warmup_length=200, epoch_num=1, subnum=None, distributed=False, batch_size=8, resume=False, resume_log_dir=None):
 
         self.local_rank = local_rank
         self.distributed = distributed
-        self.model = self.load_model(lora_rank)
+        self.model = self.load_model(model_name, lora_rank)
         torch.cuda.set_device(device=f'cuda:{local_rank}')
         self.model = self.model.float().cuda()
         self.batch_size = batch_size
@@ -48,11 +48,12 @@ class CLIP_Clean_Train():
         self.para_gamma = para_gamma
         self.scaler = torch.cuda.amp.GradScaler()
 
-    def load_model(self, lora_rank: int):
+    def load_model(self, model_name: str, lora_rank: int):
         if lora_rank == -1:
-            model, _ = alpha_clip.load("ViT-L/14@336px", device='cpu', lora_adapt=False, rank=-1)
+            model, _ = alpha_clip.load(model_name, device='cpu', lora_adapt=False, rank=-1)
+            # model, _ = alpha_clip.load("ViT-L/14@336px","/mnt/shared/models/alphaclip/model_zoo/clip_l14_336_grit_20m_4xe.pth", device='cpu', lora_adapt=False, rank=-1)
         else:
-            model, _ = alpha_clip.load("ViT-L/14", device='cpu', lora_adapt=True, rank=lora_rank)
+            model, _ = alpha_clip.load(model_name, device='cpu', lora_adapt=True, rank=lora_rank)
         return model
 
     def get_logdir(self, exp_name: str, lr: float, weight_decay: float, warmup_length: int, log_scale: float,
@@ -181,8 +182,6 @@ class CLIP_Clean_Train():
             print(f"train loss step {step}: {loss}")
             print("=====================================")
 
-            # torch.save(self.model.visual.state_dict(), self.ckptdir + f'iter_{step}.pth')
-
     @torch.no_grad()
     def test_epoch(self, dataloader, desc="Evaluating"):
         temp_corr_dict = dict()
@@ -271,7 +270,7 @@ class CLIP_Clean_Train():
         testset = Imagenet_S()
         self.text_embeddings = self.zeroshot_classifier(testset.classes, simple_templates, self.local_rank)
         sampler = DistributedSampler(dataset=testset, shuffle=False)
-        testloader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 20, sampler=sampler, num_workers=2, pin_memory=True)
+        testloader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 20, sampler=sampler, num_workers=4, pin_memory=True)
         with torch.no_grad():
             temp_corr_dict = self.test_epoch(testloader, desc="Testing")
             output = self.gather_output(temp_corr_dict)
@@ -284,36 +283,25 @@ class CLIP_Clean_Train():
                 print("=====================================")
         return
 
-    def train(self, common_pair=False, resume=False, amp=False, warmup_length=200, eval_ratio=0.1):
+    def train(self, train_data_path, train_id_file, common_pair, resume, amp, warmup_length, eval_ratio):
         testset_image_s = Imagenet_S(hi_res=True)
         testset_image_s_all_one = Imagenet_S(hi_res=True, all_one=True)
         testset_coco = COCO_Masked_Test(hi_res=True)
 
-        # demo dataset
-        # trainset = Alpha_GRIT(ids_file='grit_1m_keys_lightly.pkl',
-        #                       root_pth='/mnt/user_data/wenwen/data/GRIT/train/grit-1m-img-with-mask/',
-        #                       common_pair=common_pair, subnum=self.subnum, hi_res=True)
-        # trainset = Alpha_GRIT(ids_file='grit_coyo_1_keys.pkl',
-        #                       root_pth='/mnt/user_data/wenwen/data/GRIT/train/coyo_1_train/',
-        #                       common_pair=common_pair, subnum=self.subnum, hi_res=True)
-
-        # The data path on the 4090 server
-        # trainset = Alpha_GRIT(ids_file='grit_1m_keys_lightly.pkl',
-        #                       root_pth='/data2/shared/grit/grit-1m-img-with-mask/',
-        #                       common_pair=common_pair, subnum=self.subnum, hi_res=True)
-
-        trainset = Alpha_GRIT(ids_file='grit_coyo_1_keys.pkl',
-                              root_pth='/data2/user_data/wenwen/data/GRIT/train/coyo_1_train/',
+        trainset = Alpha_GRIT(ids_file=train_id_file,
+                              root_pth=train_data_path,
                               common_pair=common_pair, subnum=self.subnum, hi_res=True)
 
+        # just eval by image_s
+        test_loaders = self.setup_test_loaders(testset_image_s)
+        # test_loaders = self.setup_test_loaders(testset_coco, testset_image_s, testset_image_s_all_one)
 
-        test_loaders = self.setup_test_loaders(testset_coco, testset_image_s, testset_image_s_all_one)
         train_loader = self.setup_train_loader(trainset)
         self.scheduler = cosine_lr(self.optimizer, base_lr=self.lr, warmup_length=warmup_length, steps=5000, para_gamma=self.para_gamma)
         start_epoch, resume_iter = self.resume_training(resume, train_loader)
 
-        # print("Evaluating model before training starts...")
-        # self.evaluate(0, test_loaders)
+        print("Evaluating model before training starts...")
+        self.evaluate(0, test_loaders)
 
         for epoch in range(start_epoch, self.num_epoch):
             if (trainset.__len__() * epoch) > 4000 * self.batch_size * 256:
@@ -322,15 +310,16 @@ class CLIP_Clean_Train():
 
     def setup_test_loaders(self, *testsets):
         test_loaders = {}
+        # for name, testset in zip(['COCO', 'Imagenet-S', 'Imagenet-S_all_one'], testsets):
         for name, testset in zip(['Imagenet-S'], testsets):
             test_sampler = torch.utils.data.SequentialSampler(testset)
-            test_loader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 20, sampler=test_sampler, num_workers=2, pin_memory=True)
+            test_loader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 20, sampler=test_sampler, num_workers=4, pin_memory=True)
             test_loaders[name] = test_loader
         return test_loaders
 
     def setup_train_loader(self, trainset):
         train_sampler = torch.utils.data.SequentialSampler(trainset)
-        train_loader = torch.utils.data.DataLoader(trainset, batch_size=self.batch_size, sampler=train_sampler, num_workers=2, pin_memory=True)
+        train_loader = torch.utils.data.DataLoader(trainset, batch_size=self.batch_size, sampler=train_sampler, num_workers=4, pin_memory=True)
         return train_loader
 
     def resume_training(self, resume, train_loader):
@@ -373,28 +362,30 @@ if __name__ == "__main__":
     import warnings
     warnings.filterwarnings("ignore")
     parser = argparse.ArgumentParser(description='params')
-    parser.add_argument('--lr', default=4e-5, type=float, help='lr.')
-    parser.add_argument('--weight_decay', default=1e-2, type=float, help='wd.')
+    parser.add_argument('--lr', default=2e-4, type=float, help='lr.')
+    parser.add_argument('--weight_decay', default=2e-2, type=float, help='wd.')
     parser.add_argument('--log_scale', default=4.6052, type=float, help='clip temperature log scale.')
     parser.add_argument('--lora_rank', default=-1, type=int, help='lora rank (-1 to not use lora).')
-    parser.add_argument('--common_pair', default=0.0, type=float, help='propotion to use image with all 1 alpha and whole caption.')
+    parser.add_argument('--common_pair', default=0.1, type=float, help='propotion to use image with all 1 alpha and whole caption.')
     parser.add_argument('--para_gamma', default=0.01, type=float, help='para_gamma of other parameters')
     parser.add_argument("--resume", action="store_true", help="Resume training from saved checkpoint.")
     parser.add_argument("--amp", action="store_true", help="bf16 taining.")
     parser.add_argument("--exp_name", default="auto", type=str, help="specify experiment name.")
     parser.add_argument("--warmup_length", default=200, type=int, help="warmup_length.")
-    parser.add_argument("--epoch_num", default=4, type=int, help="number of epochs.")
+    parser.add_argument("--epoch_num", default=6, type=int, help="number of epochs.")
     parser.add_argument("--subnum", default=None, type=float, help="sub data number.")
     parser.add_argument("--distributed", action="store_true", help="Enable distributed training.")
-    parser.add_argument("--eval_ratio", default=0.1, type=float, help="Evaluation ratio during each epoch.")
+    parser.add_argument("--eval_ratio", default=0.2, type=float, help="Evaluation ratio during each epoch.")
     parser.add_argument("--local_rank", default=0, type=int)
     parser.add_argument("--batch_size", default=8, type=int)
     parser.add_argument("--resume_log_dir", default="auto", type=str)
+    parser.add_argument("--train_data_path", default="/data2/user_data/wenwen/data/GRIT/train/coyo_1_train/", type=str)
+    parser.add_argument("--train_id_file", default="grit_coyo_1_keys.pkl", type=str)
     args = parser.parse_args()
     # local_rank = setup_distributed(distributed=args.distributed)
     local_rank = args.local_rank
     trainer = CLIP_Clean_Train(
-        local_rank=local_rank,
+        local_rank=args.local_rank,
         lr=args.lr,
         weight_decay=args.weight_decay,
         log_scale=args.log_scale,
@@ -409,4 +400,4 @@ if __name__ == "__main__":
         resume=args.resume,
         resume_log_dir=args.resume_log_dir
     )
-    trainer.train(common_pair=args.common_pair, resume=args.resume, amp=args.amp, warmup_length=args.warmup_length, eval_ratio=args.eval_ratio)
+    trainer.train(train_data_path=args.train_data_path, train_id_file=args.train_id_file, common_pair=args.common_pair, resume=args.resume, amp=args.amp, warmup_length=args.warmup_length, eval_ratio=args.eval_ratio)

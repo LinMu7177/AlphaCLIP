@@ -1,4 +1,5 @@
 import json
+import torch
 from torch.utils.data import Dataset
 from pycocotools import mask as maskUtils
 import cv2
@@ -54,11 +55,13 @@ def crop_center(img, croph, cropw):
     return img[starth:starth+croph, startw:startw+cropw, :]
 
 class Imagenet_S(Dataset):
-    def __init__(self, ann_file='/data2/shared/imagenet-s/data/imagenet_919.json', hi_res=False, all_one=False):
-    # def __init__(self, ann_file='/mnt/shared/data/imagenet-s/imagenet_919.json', hi_res=False, all_one=False):
+    def __init__(self, ann_file='/data2/shared/imagenet-s/data/imagenet_919.json', root_pth='/data2/shared/imagenet-s/data/', hi_res=False, all_one=False):
+        if torch.cuda.device_count() == 1:
+            ann_file = '/mnt/shared/data/imagenet-s/imagenet_919.json'
+            root_pth = '/mnt/shared/data/imagenet-s/'
+
         self.anns = json.load(open(ann_file, 'r'))
-        self.root_pth = '/data2/shared/imagenet-s/data/'
-        # self.root_pth = '/mnt/shared/data/imagenet-s/'
+        self.root_pth = root_pth
         cats = []
         for ann in self.anns:
             if ann['category_word'] not in cats:
