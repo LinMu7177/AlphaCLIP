@@ -22,12 +22,14 @@ from datetime import datetime
 simple_templates = ['a photo of a {}.']
 
 class CLIP_Clean_Train():
-    def __init__(self, local_rank=0, lr=2e-4, weight_decay=0.02, log_scale=4.6052, model_name="ViT-L/14@336px", lora_rank=-1, common_pair=0.0,
-                 para_gamma=0.01, exp_name="auto", warmup_length=200, epoch_num=1, subnum=None, distributed=False, batch_size=8, resume=False, resume_log_dir=None):
+    def __init__(self, local_rank=0, lr=2e-4, weight_decay=0.02, log_scale=4.6052, model_name="ViT-L/14", hi_res=False, lora_rank=-1, common_pair=0.0,
+                 para_gamma=0.01, exp_name="auto", warmup_length=200, epoch_num=1, subnum=None, distributed=False, batch_size=8, eval_ratio=0.2, resume=False, resume_log_dir=None):
 
         self.local_rank = local_rank
         self.distributed = distributed
-        self.model = self.load_model(model_name, lora_rank)
+        self.model_name = model_name
+        self.model = self.load_model(self.model_name, lora_rank)
+        self.hi_res = hi_res
         torch.cuda.set_device(device=f'cuda:{local_rank}')
         self.model = self.model.float().cuda()
         self.batch_size = batch_size
@@ -47,6 +49,25 @@ class CLIP_Clean_Train():
         self.optimizer = self.configure_optimizer(lora_rank, para_gamma, lr)
         self.para_gamma = para_gamma
         self.scaler = torch.cuda.amp.GradScaler()
+
+        # Print parameters at initialization
+        self.print_parameters()
+
+    def print_parameters(self):
+        print("========== CLIP_Clean_Train Parameters ==========")
+        print(f"Local Rank: {self.local_rank}")
+        print(f"Model Name: {self.model_name}")
+        print(f"Hi-Res: {self.hi_res}")
+        print(f"Batch Size: {self.batch_size}")
+        print(f"Number of Epochs: {self.num_epoch}")
+        print(f"Learning Rate: {self.lr}")
+        print(f"Subnum: {self.subnum}")
+        print(f"Resume Log Directory: {self.resume_log_dir}")
+        print(f"Log Directory: {self.logdir}")
+        print(f"Checkpoint Directory: {self.ckptdir}")
+        print(f"Para Gamma: {self.para_gamma}")
+        print(f"Logit Scale: {self.model.logit_scale.item()}")
+        print("================================================")
 
     def load_model(self, model_name: str, lora_rank: int):
         if lora_rank == -1:
@@ -162,7 +183,7 @@ class CLIP_Clean_Train():
                 self.log_metrics(running_loss, 500, step)
                 running_loss = 0.0
             if eval_step > 0 and (i + 1) % eval_step == 0:
-                self.evaluate(step, test_loaders, save_checkpoint=True)
+                self.evaluate(step, test_loaders, save_checkpoint=False)
         return running_loss / batch_num
 
     def log_metrics(self, running_loss, interval, step):
@@ -270,7 +291,7 @@ class CLIP_Clean_Train():
         testset = Imagenet_S()
         self.text_embeddings = self.zeroshot_classifier(testset.classes, simple_templates, self.local_rank)
         sampler = DistributedSampler(dataset=testset, shuffle=False)
-        testloader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 20, sampler=sampler, num_workers=4, pin_memory=True)
+        testloader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 15, sampler=sampler, num_workers=6, pin_memory=True)
         with torch.no_grad():
             temp_corr_dict = self.test_epoch(testloader, desc="Testing")
             output = self.gather_output(temp_corr_dict)
@@ -284,13 +305,13 @@ class CLIP_Clean_Train():
         return
 
     def train(self, train_data_path, train_id_file, common_pair, resume, amp, warmup_length, eval_ratio):
-        testset_image_s = Imagenet_S(hi_res=True)
-        testset_image_s_all_one = Imagenet_S(hi_res=True, all_one=True)
-        testset_coco = COCO_Masked_Test(hi_res=True)
+        testset_image_s = Imagenet_S(hi_res=self.hi_res)
+        testset_image_s_all_one = Imagenet_S(hi_res=self.hi_res, all_one=True)
+        testset_coco = COCO_Masked_Test(hi_res=self.hi_res)
 
         trainset = Alpha_GRIT(ids_file=train_id_file,
                               root_pth=train_data_path,
-                              common_pair=common_pair, subnum=self.subnum, hi_res=True)
+                              common_pair=common_pair, subnum=self.subnum, hi_res=self.hi_res)
 
         # just eval by image_s
         test_loaders = self.setup_test_loaders(testset_image_s)
@@ -313,13 +334,13 @@ class CLIP_Clean_Train():
         # for name, testset in zip(['COCO', 'Imagenet-S', 'Imagenet-S_all_one'], testsets):
         for name, testset in zip(['Imagenet-S'], testsets):
             test_sampler = torch.utils.data.SequentialSampler(testset)
-            test_loader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 20, sampler=test_sampler, num_workers=4, pin_memory=True)
+            test_loader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 15, sampler=test_sampler, num_workers=6, pin_memory=True)
             test_loaders[name] = test_loader
         return test_loaders
 
     def setup_train_loader(self, trainset):
         train_sampler = torch.utils.data.SequentialSampler(trainset)
-        train_loader = torch.utils.data.DataLoader(trainset, batch_size=self.batch_size, sampler=train_sampler, num_workers=4, pin_memory=True)
+        train_loader = torch.utils.data.DataLoader(trainset, batch_size=self.batch_size, sampler=train_sampler, num_workers=6, pin_memory=True)
         return train_loader
 
     def resume_training(self, resume, train_loader):
@@ -362,6 +383,8 @@ if __name__ == "__main__":
     import warnings
     warnings.filterwarnings("ignore")
     parser = argparse.ArgumentParser(description='params')
+    parser.add_argument('--model_name', default='ViT-L/14', type=str)
+    parser.add_argument('--hi_res', default=False, type=bool)
     parser.add_argument('--lr', default=2e-4, type=float, help='lr.')
     parser.add_argument('--weight_decay', default=2e-2, type=float, help='wd.')
     parser.add_argument('--log_scale', default=4.6052, type=float, help='clip temperature log scale.')
@@ -386,6 +409,8 @@ if __name__ == "__main__":
     local_rank = args.local_rank
     trainer = CLIP_Clean_Train(
         local_rank=args.local_rank,
+        model_name=args.model_name,
+        hi_res=args.hi_res,
         lr=args.lr,
         weight_decay=args.weight_decay,
         log_scale=args.log_scale,
@@ -397,6 +422,7 @@ if __name__ == "__main__":
         epoch_num=args.epoch_num,
         subnum=int(args.subnum) if args.subnum is not None else None,
         batch_size=args.batch_size,
+        eval_ratio=args.eval_ratio,
         resume=args.resume,
         resume_log_dir=args.resume_log_dir
     )
