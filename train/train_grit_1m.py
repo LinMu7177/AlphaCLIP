@@ -37,18 +37,15 @@ class CLIP_Clean_Train():
         self.lr = lr
         self.subnum = subnum
         self.resume_log_dir = resume_log_dir
-        self.logdir = self.get_logdir(exp_name, lr, weight_decay, warmup_length, log_scale, lora_rank, common_pair, para_gamma, epoch_num, subnum, resume)
+        self.logdir = self.get_logdir(exp_name, lr, model_name, epoch_num, resume)
         self.ckptdir = os.path.join(self.logdir, "ckpt/")
         os.makedirs(self.ckptdir, exist_ok=True)
         self.writer = SummaryWriter(self.logdir)
-        # self.model.visual = torch.nn.parallel.DistributedDataParallel(self.model.visual, device_ids=[local_rank],
-        #                                                               output_device=local_rank,
-        #                                                               find_unused_parameters=True)
-        # logit scale
         self.model.logit_scale = torch.nn.Parameter(torch.ones([]) * log_scale)
         self.optimizer = self.configure_optimizer(lora_rank, para_gamma, lr)
         self.para_gamma = para_gamma
         self.scaler = torch.cuda.amp.GradScaler()
+        self.best_accuracy = 0.0
 
         # Print parameters at initialization
         self.print_parameters()
@@ -77,15 +74,14 @@ class CLIP_Clean_Train():
             model, _ = alpha_clip.load(model_name, device='cpu', lora_adapt=True, rank=lora_rank)
         return model
 
-    def get_logdir(self, exp_name: str, lr: float, weight_decay: float, warmup_length: int, log_scale: float,
-                   lora_rank: int, common_pair: float, para_gamma: float, epoch_num: int, subnum: int, resume: bool) -> str:
+    def get_logdir(self, exp_name: str, lr: float, model_name: str, epoch_num: int, resume: bool) -> str:
         if resume:
             if self.resume_log_dir is None:
                 raise ValueError("Please specify the logdir for resume training.")
             else:
                 return self.resume_log_dir
         date_str = datetime.now().strftime("%Y%m%d")
-        base_logdir = f"log/{date_str}_grit_1m/lr={lr}_wd={weight_decay}_wl={warmup_length}_logs={log_scale}_L14_336_lora={lora_rank}_cp={common_pair}_para_gamma={para_gamma}_e{epoch_num}_16xb_subnum={subnum}"
+        base_logdir = f"log/{date_str}_grit_1m/lr={lr}_model_name={model_name}_e{epoch_num}_resume={resume}"
         logdir = base_logdir
         suffix = 1
         while os.path.exists(logdir):
@@ -183,7 +179,7 @@ class CLIP_Clean_Train():
                 self.log_metrics(running_loss, 500, step)
                 running_loss = 0.0
             if eval_step > 0 and (i + 1) % eval_step == 0:
-                self.evaluate(step, test_loaders, save_checkpoint=False)
+                self.evaluate(step, test_loaders, save_checkpoint=True)
         return running_loss / batch_num
 
     def log_metrics(self, running_loss, interval, step):
@@ -228,23 +224,39 @@ class CLIP_Clean_Train():
     def evaluate(self, step, test_loaders, save_checkpoint=False):
         torch.cuda.empty_cache()
         self.model.visual.eval()
+        current_accuracy = 0.0
         for test_name, test_loader in test_loaders.items():
             tqdm.write(f"Zeroshot Classifier Evaluating {test_name} at step {step}")
-            self.text_embeddings = self.zeroshot_classifier(test_loader.dataset.classes, simple_templates, self.local_rank)
+            self.text_embeddings = self.zeroshot_classifier(test_loader.dataset.classes, simple_templates,
+                                                            self.local_rank)
             temp_corr_dict = self.test_epoch(test_loader, desc=f"Evaluating {test_name}")
             output = self.gather_output(temp_corr_dict)
             if not dist.is_initialized() or dist.get_rank() == 0:
-                self.log_test_results(test_name, step, output)
+                acc1, acc5 = self.log_test_results(test_name, step, output)
+                current_accuracy += acc1  # Sum up accuracies from all test sets
 
-        if save_checkpoint:
-            self.save_checkpoint(step)
+        # Calculate average accuracy across all test sets
+        current_accuracy /= len(test_loaders)
+
+        if current_accuracy > self.best_accuracy:
+            self.best_accuracy = current_accuracy
+            if save_checkpoint:
+                self.save_checkpoint(step)
+                print(f"New best accuracy: {self.best_accuracy:.4f}. Checkpoint saved at step {step}.")
 
         self.model.visual.train()
         torch.cuda.empty_cache()
 
     def save_checkpoint(self, step):
         if not dist.is_initialized() or dist.get_rank() == 0:
-            torch.save(self.model.visual.state_dict(), self.ckptdir + f'iter_{step}.pth')
+            checkpoint_path = os.path.join(self.ckptdir, 'best_model.pth')
+            torch.save({
+                'step': step,
+                'model_state_dict': self.model.visual.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'best_accuracy': self.best_accuracy,
+            }, checkpoint_path)
+            print(f"Saved best checkpoint to {checkpoint_path}")
 
     def gather_output(self, temp_corr_dict):
         if dist.is_initialized():
@@ -263,6 +275,7 @@ class CLIP_Clean_Train():
         print("=====================================")
         self.writer.add_scalar(f"{test_name}_Acc1/test", acc1, step)
         self.writer.add_scalar(f"{test_name}_Acc5/test", acc5, step)
+        return acc1, acc5
 
     def aggregate_output(self, output):
         final_dict = dict()
@@ -291,7 +304,7 @@ class CLIP_Clean_Train():
         testset = Imagenet_S()
         self.text_embeddings = self.zeroshot_classifier(testset.classes, simple_templates, self.local_rank)
         sampler = DistributedSampler(dataset=testset, shuffle=False)
-        testloader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 15, sampler=sampler, num_workers=6, pin_memory=True)
+        testloader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 5, sampler=sampler, num_workers=16, pin_memory=True)
         with torch.no_grad():
             temp_corr_dict = self.test_epoch(testloader, desc="Testing")
             output = self.gather_output(temp_corr_dict)
@@ -334,25 +347,30 @@ class CLIP_Clean_Train():
         # for name, testset in zip(['COCO', 'Imagenet-S', 'Imagenet-S_all_one'], testsets):
         for name, testset in zip(['Imagenet-S'], testsets):
             test_sampler = torch.utils.data.SequentialSampler(testset)
-            test_loader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 15, sampler=test_sampler, num_workers=6, pin_memory=True)
+            test_loader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 5, sampler=test_sampler, num_workers=16, pin_memory=True)
             test_loaders[name] = test_loader
         return test_loaders
 
     def setup_train_loader(self, trainset):
         train_sampler = torch.utils.data.SequentialSampler(trainset)
-        train_loader = torch.utils.data.DataLoader(trainset, batch_size=self.batch_size, sampler=train_sampler, num_workers=6, pin_memory=True)
+        train_loader = torch.utils.data.DataLoader(trainset, batch_size=self.batch_size, sampler=train_sampler, num_workers=20, pin_memory=True)
         return train_loader
 
     def resume_training(self, resume, train_loader):
         start_epoch, resume_iter = 0, 0
         if resume and os.listdir(self.ckptdir):
-            # resume_pth = os.listdir(self.ckptdir)[-1]
-            resume_pth = max(os.listdir(self.ckptdir), key=lambda x: int(x[5:-4]))
-            resume_iter = int(resume_pth[5:-4])
-            start_epoch = resume_iter // len(train_loader)
-            map_location = {'cuda:0': f'cuda:{self.local_rank}'}
-            self.model.visual.load_state_dict(torch.load(os.path.join(self.ckptdir, resume_pth), map_location=map_location))
-            print(f"load resumed checkpoint: {resume_pth}")
+            checkpoint_path = os.path.join(self.ckptdir, 'best_model.pth')
+            if os.path.exists(checkpoint_path):
+                map_location = {'cuda:0': f'cuda:{self.local_rank}'}
+                checkpoint = torch.load(checkpoint_path, map_location=map_location)
+                self.model.visual.load_state_dict(checkpoint['model_state_dict'])
+                self.best_accuracy = checkpoint['best_accuracy']
+                resume_iter = checkpoint['step']
+                start_epoch = resume_iter // len(train_loader)
+                print(f"Resumed from checkpoint: {checkpoint_path}")
+                print(f"Best accuracy so far: {self.best_accuracy:.4f}")
+            else:
+                print("No checkpoint found. Starting from scratch.")
         return start_epoch, resume_iter
 
 def setup_distributed(backend="nccl", port=None, distributed=False):
@@ -401,7 +419,7 @@ if __name__ == "__main__":
     parser.add_argument("--eval_ratio", default=0.2, type=float, help="Evaluation ratio during each epoch.")
     parser.add_argument("--local_rank", default=0, type=int)
     parser.add_argument("--batch_size", default=8, type=int)
-    parser.add_argument("--resume_log_dir", default="auto", type=str)
+    parser.add_argument("--resume_log_dir", default="log/auto", type=str)
     parser.add_argument("--train_data_path", default="/data2/user_data/wenwen/data/GRIT/train/coyo_1_train/", type=str)
     parser.add_argument("--train_id_file", default="grit_coyo_1_keys.pkl", type=str)
     args = parser.parse_args()
