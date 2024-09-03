@@ -16,14 +16,14 @@ from utils import concat_all_gather, is_dist_avail_and_initialized
 from scheduler import cosine_lr
 from dataset.imagenet_s_test import Imagenet_S
 from dataset.mask_image_test import COCO_Masked_Test
-from dataset.alpha_grit import Alpha_GRIT
+from dataset.alpha_grit_sam2 import Alpha_GRIT_SAM2
 from datetime import datetime
 
 simple_templates = ['a photo of a {}.']
 
 class CLIP_Clean_Train():
-    def __init__(self, local_rank=0, lr=2e-4, weight_decay=0.02, log_scale=4.6052, model_name="ViT-L/14", hi_res=False, lora_rank=-1, common_pair=0.0,
-                 para_gamma=0.01, exp_name="auto", warmup_length=200, epoch_num=1, subnum=None, distributed=False, batch_size=8, eval_ratio=0.2, resume=False, resume_log_dir=None):
+    def __init__(self, local_rank=0, lr=2e-4, log_scale=4.6052, model_name="ViT-L/14", hi_res=False, lora_rank=-1,
+                 para_gamma=0.01, exp_name="auto", epoch_num=1, subnum=None, distributed=False, batch_size=8, resume=False, resume_log_dir=None):
 
         self.local_rank = local_rank
         self.distributed = distributed
@@ -304,7 +304,7 @@ class CLIP_Clean_Train():
         testset = Imagenet_S()
         self.text_embeddings = self.zeroshot_classifier(testset.classes, simple_templates, self.local_rank)
         sampler = DistributedSampler(dataset=testset, shuffle=False)
-        testloader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 5, sampler=sampler, num_workers=16, pin_memory=True)
+        testloader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 10, sampler=sampler, num_workers=8, pin_memory=True)
         with torch.no_grad():
             temp_corr_dict = self.test_epoch(testloader, desc="Testing")
             output = self.gather_output(temp_corr_dict)
@@ -322,7 +322,7 @@ class CLIP_Clean_Train():
         testset_image_s_all_one = Imagenet_S(hi_res=self.hi_res, all_one=True)
         testset_coco = COCO_Masked_Test(hi_res=self.hi_res)
 
-        trainset = Alpha_GRIT(ids_file=train_id_file,
+        trainset = Alpha_GRIT_SAM2(ids_file=train_id_file,
                               root_pth=train_data_path,
                               common_pair=common_pair, subnum=self.subnum, hi_res=self.hi_res)
 
@@ -334,8 +334,8 @@ class CLIP_Clean_Train():
         self.scheduler = cosine_lr(self.optimizer, base_lr=self.lr, warmup_length=warmup_length, steps=5000, para_gamma=self.para_gamma)
         start_epoch, resume_iter = self.resume_training(resume, train_loader)
 
-        print("Evaluating model before training starts...")
-        self.evaluate(0, test_loaders)
+        # print("Evaluating model before training starts...")
+        # self.evaluate(0, test_loaders)
 
         for epoch in range(start_epoch, self.num_epoch):
             if (trainset.__len__() * epoch) > 4000 * self.batch_size * 256:
@@ -347,13 +347,13 @@ class CLIP_Clean_Train():
         # for name, testset in zip(['COCO', 'Imagenet-S', 'Imagenet-S_all_one'], testsets):
         for name, testset in zip(['Imagenet-S'], testsets):
             test_sampler = torch.utils.data.SequentialSampler(testset)
-            test_loader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 5, sampler=test_sampler, num_workers=16, pin_memory=True)
+            test_loader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 10, sampler=test_sampler, num_workers=8, pin_memory=True)
             test_loaders[name] = test_loader
         return test_loaders
 
     def setup_train_loader(self, trainset):
         train_sampler = torch.utils.data.SequentialSampler(trainset)
-        train_loader = torch.utils.data.DataLoader(trainset, batch_size=self.batch_size, sampler=train_sampler, num_workers=20, pin_memory=True)
+        train_loader = torch.utils.data.DataLoader(trainset, batch_size=self.batch_size, sampler=train_sampler, num_workers=8, pin_memory=True)
         return train_loader
 
     def resume_training(self, resume, train_loader):
@@ -430,17 +430,13 @@ if __name__ == "__main__":
         model_name=args.model_name,
         hi_res=args.hi_res,
         lr=args.lr,
-        weight_decay=args.weight_decay,
         log_scale=args.log_scale,
         lora_rank=args.lora_rank,
-        common_pair=args.common_pair,
         para_gamma=args.para_gamma,
         exp_name=args.exp_name,
-        warmup_length=args.warmup_length,
         epoch_num=args.epoch_num,
         subnum=int(args.subnum) if args.subnum is not None else None,
         batch_size=args.batch_size,
-        eval_ratio=args.eval_ratio,
         resume=args.resume,
         resume_log_dir=args.resume_log_dir
     )
