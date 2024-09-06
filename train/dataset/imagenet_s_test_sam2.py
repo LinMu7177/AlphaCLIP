@@ -1,8 +1,11 @@
+import os
 import json
 import torch
 from torch.utils.data import Dataset
 from pycocotools import mask as maskUtils
 import cv2
+import pickle
+from scipy.ndimage import convolve
 from torchvision import transforms
 from tqdm import tqdm
 import numpy as np
@@ -54,7 +57,7 @@ def crop_center(img, croph, cropw):
     startw = w//2 - (cropw//2)    
     return img[starth:starth+croph, startw:startw+cropw, :]
 
-class Imagenet_S(Dataset):
+class Imagenet_S_SAM2(Dataset):
     def __init__(self, ann_file='/data2/shared/imagenet-s/data/imagenet_919.json', root_pth='/data2/shared/imagenet-s/data/', hi_res=False, all_one=False):
         if torch.cuda.device_count() == 1:
             ann_file = '/data2/shared/data/imagenet-s/imagenet_919.json'
@@ -86,12 +89,47 @@ class Imagenet_S(Dataset):
     def __len__(self):
         return len(self.anns)
 
+    def rle_to_mask(self, rle):
+        return maskUtils.decode(rle)
+
+    def binary_mask_edges(self, binary_mask):
+        kernel = np.array([[1, 1, 1],
+                           [1, -8, 1],
+                           [1, 1, 1]])
+
+        edges = convolve(binary_mask.astype(np.float32), kernel)
+        edges = np.clip(edges, 0, 1)
+        return edges.astype(np.uint8)
+
+    def load_mask(self, pkl_file_path, image_shape):
+        if os.path.exists(pkl_file_path):
+            with open(pkl_file_path, 'rb') as f:
+                masks = pickle.load(f)
+
+            shape = masks[0]['segmentation']['size']
+            combined_edges = np.zeros(shape, dtype=np.uint8)
+            sorted_masks = sorted(masks, key=lambda x: x['area'], reverse=True)
+
+            for mask_data in sorted_masks:
+                segmentation = mask_data['segmentation']
+                rle_counts = segmentation['counts']
+                binary_mask = self.rle_to_mask({'size': shape, 'counts': rle_counts})
+                # binary_mask = np.clip(binary_mask, 0, 1)
+                # edges = cv2.Canny(binary_mask.astype(np.uint8), 1, 1)
+                edges = self.binary_mask_edges(binary_mask)
+                combined_edges = np.maximum(combined_edges, edges)
+            return combined_edges
+        else:
+            return np.ones(image_shape[:2], dtype=np.uint8)
+
     def __getitem__(self, index):
         ann = self.anns[index]
         image = cv2.imread(self.root_pth + ann['image_pth'])
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        mask = maskUtils.decode(ann['mask'])
+        mask_path = '/data2/shared/imagenet-s/data/image_sam2/' + os.path.basename(ann['image_pth']).replace('.JPEG','') + '_mask.pkl'
+        mask = self.load_mask(mask_path, image.shape)
+
         rgba = np.concatenate((image, np.expand_dims(mask, axis=-1)), axis=-1)
         h, w = rgba.shape[:2]
         
@@ -132,6 +170,6 @@ class Imagenet_S(Dataset):
         return image_torch, mask_torch, ann['cat_index']
 
 if __name__ == "__main__":
-    data = Imagenet_S()
+    data = Imagenet_S_SAM2()
     for i in tqdm(range(data.__len__())):
         data.__getitem__(i)

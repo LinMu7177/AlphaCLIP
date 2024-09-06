@@ -14,7 +14,7 @@ import alpha_clip
 import loralib as lora
 from utils import concat_all_gather, is_dist_avail_and_initialized
 from scheduler import cosine_lr
-from dataset.imagenet_s_test import Imagenet_S
+from dataset.imagenet_s_test_sam2 import Imagenet_S_SAM2
 from dataset.mask_image_test import COCO_Masked_Test
 from dataset.alpha_grit_sam2 import Alpha_GRIT_SAM2
 from datetime import datetime
@@ -118,7 +118,7 @@ class CLIP_Clean_Train():
         return optimizer
 
     @torch.no_grad()
-    def zeroshot_classifier(self, classnames, templates, local_rank=0):
+    def zeroshot_classifier(self, classnames, templates):
         zeroshot_weights = []
         for classname in tqdm(classnames, disable=(dist.get_rank() != 0 if dist.is_initialized() else False)):
             texts = [template.format(classname) for template in templates]
@@ -227,8 +227,7 @@ class CLIP_Clean_Train():
         current_accuracy = 0.0
         for test_name, test_loader in test_loaders.items():
             tqdm.write(f"Zeroshot Classifier Evaluating {test_name} at step {step}")
-            self.text_embeddings = self.zeroshot_classifier(test_loader.dataset.classes, simple_templates,
-                                                            self.local_rank)
+            self.text_embeddings = self.zeroshot_classifier(test_loader.dataset.classes, simple_templates)
             temp_corr_dict = self.test_epoch(test_loader, desc=f"Evaluating {test_name}")
             output = self.gather_output(temp_corr_dict)
             if not dist.is_initialized() or dist.get_rank() == 0:
@@ -301,10 +300,10 @@ class CLIP_Clean_Train():
 
     def test(self):
         self.model.visual.eval()
-        testset = Imagenet_S()
-        self.text_embeddings = self.zeroshot_classifier(testset.classes, simple_templates, self.local_rank)
+        testset = Imagenet_S_SAM2()
+        self.text_embeddings = self.zeroshot_classifier(testset.classes, simple_templates)
         sampler = DistributedSampler(dataset=testset, shuffle=False)
-        testloader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 10, sampler=sampler, num_workers=8, pin_memory=True)
+        testloader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 5, sampler=sampler, num_workers=8, pin_memory=True)
         with torch.no_grad():
             temp_corr_dict = self.test_epoch(testloader, desc="Testing")
             output = self.gather_output(temp_corr_dict)
@@ -318,8 +317,8 @@ class CLIP_Clean_Train():
         return
 
     def train(self, train_data_path, train_id_file, common_pair, resume, amp, warmup_length, eval_ratio):
-        testset_image_s = Imagenet_S(hi_res=self.hi_res)
-        testset_image_s_all_one = Imagenet_S(hi_res=self.hi_res, all_one=True)
+        testset_image_s = Imagenet_S_SAM2(hi_res=self.hi_res)
+        testset_image_s_all_one = Imagenet_S_SAM2(hi_res=self.hi_res, all_one=True)
         testset_coco = COCO_Masked_Test(hi_res=self.hi_res)
 
         trainset = Alpha_GRIT_SAM2(ids_file=train_id_file,
@@ -334,8 +333,8 @@ class CLIP_Clean_Train():
         self.scheduler = cosine_lr(self.optimizer, base_lr=self.lr, warmup_length=warmup_length, steps=5000, para_gamma=self.para_gamma)
         start_epoch, resume_iter = self.resume_training(resume, train_loader)
 
-        # print("Evaluating model before training starts...")
-        # self.evaluate(0, test_loaders)
+        print("Evaluating model before training starts...")
+        self.evaluate(0, test_loaders)
 
         for epoch in range(start_epoch, self.num_epoch):
             if (trainset.__len__() * epoch) > 4000 * self.batch_size * 256:
@@ -347,7 +346,7 @@ class CLIP_Clean_Train():
         # for name, testset in zip(['COCO', 'Imagenet-S', 'Imagenet-S_all_one'], testsets):
         for name, testset in zip(['Imagenet-S'], testsets):
             test_sampler = torch.utils.data.SequentialSampler(testset)
-            test_loader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 10, sampler=test_sampler, num_workers=8, pin_memory=True)
+            test_loader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 5, sampler=test_sampler, num_workers=8, pin_memory=True)
             test_loaders[name] = test_loader
         return test_loaders
 

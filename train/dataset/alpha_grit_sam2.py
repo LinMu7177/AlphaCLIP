@@ -1,9 +1,11 @@
+import os
 import cv2
 import random
 import json
 import pickle
 import numpy as np
 from PIL import Image
+from scipy.ndimage import convolve
 from torchvision import transforms
 from torch.utils.data import Dataset
 from pycocotools import mask as maskUtils
@@ -87,22 +89,35 @@ class Alpha_GRIT_SAM2(Dataset):
     def rle_to_mask(self, rle):
         return maskUtils.decode(rle)
 
-    def load_mask(self, pkl_file_path):
-        with open(pkl_file_path, 'rb') as f:
-            masks = pickle.load(f)
+    def binary_mask_edges(self, binary_mask):
+        kernel = np.array([[1, 1, 1],
+                           [1, -8, 1],
+                           [1, 1, 1]])
 
-        shape = masks[0]['segmentation']['size']
-        combined_edges = np.zeros(shape, dtype=np.uint8)
-        sorted_masks = sorted(masks, key=lambda x: x['area'], reverse=True)
+        edges = convolve(binary_mask.astype(np.float32), kernel)
+        edges = np.clip(edges, 0, 1)
+        return edges.astype(np.uint8)
 
-        for mask_data in sorted_masks:
-            segmentation = mask_data['segmentation']
-            rle_counts = segmentation['counts']
-            binary_mask = self.rle_to_mask({'size': shape, 'counts': rle_counts})
-            binary_mask = np.clip(binary_mask, 0, 1)
-            edges = cv2.Canny(binary_mask.astype(np.uint8), 1, 1)
-            combined_edges = np.maximum(combined_edges, edges)
-        return combined_edges
+    def load_mask(self, pkl_file_path, image_shape):
+        if os.path.exists(pkl_file_path):
+            with open(pkl_file_path, 'rb') as f:
+                masks = pickle.load(f)
+
+            shape = masks[0]['segmentation']['size']
+            combined_edges = np.zeros(shape, dtype=np.uint8)
+            sorted_masks = sorted(masks, key=lambda x: x['area'], reverse=True)
+
+            for mask_data in sorted_masks:
+                segmentation = mask_data['segmentation']
+                rle_counts = segmentation['counts']
+                binary_mask = self.rle_to_mask({'size': shape, 'counts': rle_counts})
+                # binary_mask = np.clip(binary_mask, 0, 1)
+                # edges = cv2.Canny(binary_mask.astype(np.uint8), 1, 1)
+                edges = self.binary_mask_edges(binary_mask)
+                combined_edges = np.maximum(combined_edges, edges)
+            return combined_edges
+        else:
+            return np.ones(image_shape[:2], dtype=np.uint8)
 
     def __getitem__(self, index):
         id = self.ids[index]
@@ -112,8 +127,7 @@ class Alpha_GRIT_SAM2(Dataset):
         img = cv2.imdecode(img, cv2.IMREAD_COLOR)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-
-        mask = self.load_mask('/data2/shared/data/SAM2_Dataset/GRIT/train_1m_sam2_split/folder_1/' + str(id) + '_mask.pkl')
+        mask = self.load_mask('/data2/shared/data/SAM2_Dataset/GRIT/train_1m_sam2/' + str(id) + '_mask.pkl')
 
         if mask.shape != img.shape[:2]:
             img = np.rot90(img)
