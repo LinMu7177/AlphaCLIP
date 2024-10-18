@@ -1,6 +1,5 @@
 import os
 import cv2
-import random
 import json
 import pickle
 import numpy as np
@@ -60,14 +59,6 @@ res_mask_transform = transforms.Compose([
     transforms.Normalize(0.5, 0.26)
 ])
 
-
-def crop_center(img, croph, cropw):
-    h, w = img.shape[:2]
-    starth = h // 2 - (croph // 2)
-    startw = w // 2 - (cropw // 2)
-    return img[starth:starth + croph, startw:startw + cropw, :]
-
-
 class Alpha_GRIT_SAM2(Dataset):
     def __init__(self, ids_file, root_pth, common_pair=0.0, hi_res=False, subnum=None):
         if subnum is not None:
@@ -108,6 +99,8 @@ class Alpha_GRIT_SAM2(Dataset):
             sorted_masks = sorted(masks, key=lambda x: x['area'], reverse=True)
 
             for mask_data in sorted_masks:
+                if mask_data['area'] < 1000:
+                    continue
                 segmentation = mask_data['segmentation']
                 rle_counts = segmentation['counts']
                 binary_mask = self.rle_to_mask({'size': shape, 'counts': rle_counts})
@@ -127,7 +120,7 @@ class Alpha_GRIT_SAM2(Dataset):
         img = cv2.imdecode(img, cv2.IMREAD_COLOR)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-        mask = self.load_mask('/data2/shared/data/SAM2_Dataset/GRIT/train_1m_sam2/' + str(id) + '_mask.pkl')
+        mask = self.load_mask('/mnt/shared/data/SAM2_Dataset/GRIT/train_1m_sam2/' + str(id) + '_mask.pkl', img.shape)
 
         if mask.shape != img.shape[:2]:
             img = np.rot90(img)

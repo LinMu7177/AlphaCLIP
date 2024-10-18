@@ -303,7 +303,7 @@ class CLIP_Clean_Train():
         testset = Imagenet_S_SAM2()
         self.text_embeddings = self.zeroshot_classifier(testset.classes, simple_templates)
         sampler = DistributedSampler(dataset=testset, shuffle=False)
-        testloader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 5, sampler=sampler, num_workers=8, pin_memory=True)
+        testloader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 10, sampler=sampler, num_workers=8, pin_memory=True)
         with torch.no_grad():
             temp_corr_dict = self.test_epoch(testloader, desc="Testing")
             output = self.gather_output(temp_corr_dict)
@@ -346,7 +346,7 @@ class CLIP_Clean_Train():
         # for name, testset in zip(['COCO', 'Imagenet-S', 'Imagenet-S_all_one'], testsets):
         for name, testset in zip(['Imagenet-S'], testsets):
             test_sampler = torch.utils.data.SequentialSampler(testset)
-            test_loader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 5, sampler=test_sampler, num_workers=8, pin_memory=True)
+            test_loader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 10, sampler=test_sampler, num_workers=8, pin_memory=True)
             test_loaders[name] = test_loader
         return test_loaders
 

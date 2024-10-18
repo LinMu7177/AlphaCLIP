@@ -60,8 +60,8 @@ def crop_center(img, croph, cropw):
 class Imagenet_S_SAM2(Dataset):
     def __init__(self, ann_file='/data2/shared/imagenet-s/data/imagenet_919.json', root_pth='/data2/shared/imagenet-s/data/', hi_res=False, all_one=False):
         if torch.cuda.device_count() == 1:
-            ann_file = '/data2/shared/data/imagenet-s/imagenet_919.json'
-            root_pth = '/data2/shared/imagenet-s/data/'
+            ann_file = '/mnt/shared/data/imagenet-s/imagenet_919.json'
+            root_pth = '/mnt/shared/data/imagenet-s/'
 
         self.anns = json.load(open(ann_file, 'r'))
         self.root_pth = root_pth
@@ -111,6 +111,8 @@ class Imagenet_S_SAM2(Dataset):
             sorted_masks = sorted(masks, key=lambda x: x['area'], reverse=True)
 
             for mask_data in sorted_masks:
+                if mask_data['area'] < 1000:
+                    continue
                 segmentation = mask_data['segmentation']
                 rle_counts = segmentation['counts']
                 binary_mask = self.rle_to_mask({'size': shape, 'counts': rle_counts})
@@ -127,7 +129,7 @@ class Imagenet_S_SAM2(Dataset):
         image = cv2.imread(self.root_pth + ann['image_pth'])
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        mask_path = '/data2/shared/imagenet-s/data/image_sam2/' + os.path.basename(ann['image_pth']).replace('.JPEG','') + '_mask.pkl'
+        mask_path = self.root_pth + 'image_sam2/' + os.path.basename(ann['image_pth']).replace('.JPEG','') + '_mask.pkl'
         mask = self.load_mask(mask_path, image.shape)
 
         rgba = np.concatenate((image, np.expand_dims(mask, axis=-1)), axis=-1)
