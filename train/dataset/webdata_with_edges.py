@@ -2,6 +2,7 @@ import os
 import pickle
 import numpy as np
 from PIL import Image
+from tqdm import tqdm
 import webdataset as wds
 from torchvision import transforms
 from torch.utils.data import IterableDataset
@@ -75,7 +76,13 @@ class WebData_With_Edges(IterableDataset):
 
     def __len__(self):
         if self._length is None:
-            self._length = sum(1 for _ in self.dataset)
+            if "00000..00331" in self.data_path:
+                self._length = 2264326
+                return self._length
+            print("Calculate the dataset length")
+            # self._length = sum(1 for _ in self.dataset)
+            self._length = sum(1 for _ in tqdm(self.dataset, desc="Calculating length"))
+            print(self._length)
         return self._length
 
     def rle_to_mask(self, rle):

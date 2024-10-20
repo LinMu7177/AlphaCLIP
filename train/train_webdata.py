@@ -13,7 +13,7 @@ from tqdm import tqdm
 import loralib as lora
 from utils import concat_all_gather, is_dist_avail_and_initialized
 from scheduler import cosine_lr
-from dataset.imagenet_s_test_sam2 import Imagenet_S_SAM2
+from dataset.imagenet_s_test_edges import Imagenet_S_Edges
 from dataset.webdata_with_edges import WebData_With_Edges
 from datetime import datetime
 
@@ -76,7 +76,7 @@ class CLIP_Clean_Train():
             else:
                 return self.resume_log_dir
         date_str = datetime.now().strftime("%Y%m%d")
-        base_logdir = f"log/{date_str}_grit_1m/lr={lr}_model_name={model_name}_e{epoch_num}_resume={resume}"
+        base_logdir = f"log/{date_str}_grit_edges/lr={lr}_model_name={model_name}_e{epoch_num}_resume={resume}"
         logdir = base_logdir
         suffix = 1
         while os.path.exists(logdir):
@@ -294,10 +294,10 @@ class CLIP_Clean_Train():
 
     def test(self):
         self.model.visual.eval()
-        testset = Imagenet_S_SAM2()
+        testset = Imagenet_S_Edges()
         self.text_embeddings = self.zeroshot_classifier(testset.classes, simple_templates)
         sampler = DistributedSampler(dataset=testset, shuffle=False)
-        testloader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 10, sampler=sampler, num_workers=8, pin_memory=True)
+        testloader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 6, sampler=sampler, num_workers=8, pin_memory=True)
         with torch.no_grad():
             temp_corr_dict = self.test_epoch(testloader, desc="Testing")
             output = self.gather_output(temp_corr_dict)
@@ -311,7 +311,7 @@ class CLIP_Clean_Train():
         return
 
     def train(self, train_data_path, edges_path, num_workers, resume, amp, warmup_length, eval_ratio):
-        testset_image_s = Imagenet_S_SAM2(hi_res=self.hi_res)
+        testset_image_s = Imagenet_S_Edges(hi_res=self.hi_res)
         test_loaders = self.setup_test_loaders(testset_image_s)
 
         trainset = WebData_With_Edges(data_path=train_data_path, edges_path=edges_path)
@@ -331,7 +331,7 @@ class CLIP_Clean_Train():
         # for name, testset in zip(['COCO', 'Imagenet-S', 'Imagenet-S_all_one'], testsets):
         for name, testset in zip(['Imagenet-S'], testsets):
             test_sampler = torch.utils.data.SequentialSampler(testset)
-            test_loader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 10, sampler=test_sampler, num_workers=8, pin_memory=True)
+            test_loader = torch.utils.data.DataLoader(testset, batch_size=self.batch_size * 6, sampler=test_sampler, num_workers=8, pin_memory=True)
             test_loaders[name] = test_loader
         return test_loaders
 
@@ -376,7 +376,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", default=8, type=int)
     parser.add_argument("--num_workers", default=4, type=int)
     parser.add_argument("--resume_log_dir", default="log/auto", type=str)
-    parser.add_argument("--train_data_path", default="/mnt/shared/data/CC3M/cc3m/{00000..00300}.tar", type=str)
+    parser.add_argument("--train_data_path", default="/mnt/shared/data/CC3M/cc3m/{00000..00331}.tar", type=str)
     parser.add_argument("--edges_path", default="/mnt/shared/data/DINO_SAM2_Data/cc3m/", type=str)
     args = parser.parse_args()
 
