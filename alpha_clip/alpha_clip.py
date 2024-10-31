@@ -1,12 +1,16 @@
 import hashlib
 import os
+import types
 import urllib
 import warnings
 from typing import Any, Union, List
+
+import open_clip
 from pkg_resources import packaging
 
 import torch
 from PIL import Image
+from torch import nn
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
 from tqdm import tqdm
 
@@ -15,14 +19,13 @@ from .simple_tokenizer import SimpleTokenizer as _Tokenizer
 
 try:
     from torchvision.transforms import InterpolationMode
+
     BICUBIC = InterpolationMode.BICUBIC
 except ImportError:
     BICUBIC = Image.BICUBIC
 
-
 if packaging.version.parse(torch.__version__) < packaging.version.parse("1.7.1"):
     warnings.warn("PyTorch version 1.7.1 or higher is recommended")
-
 
 __all__ = ["available_models", "load", "tokenize"]
 _tokenizer = _Tokenizer()
@@ -38,6 +41,49 @@ _MODELS = {
     "ViT-L/14": "https://openaipublic.azureedge.net/clip/models/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt",
     "ViT-L/14@336px": "https://openaipublic.azureedge.net/clip/models/3035c92b350959924f9f00213499208652fc7ea050643e8b385c2dac08641f02/ViT-L-14-336px.pt",
 }
+
+# model_name: model_path
+_OPEN_CLIPS = {
+    "convnext_base_w": "/mnt/shared/unibench/models/open-clip/CLIP-convnext_base_w-laion2B-s13B-b82K/open_clip_pytorch_model.bin"
+}
+
+
+def load_open_clip(name: str):
+    if "conv" in name:
+        model, _, _ = open_clip.create_model_and_transforms(name, pretrained=_OPEN_CLIPS[name])
+
+        visual_encoder = model.visual
+        stem_conv = visual_encoder.trunk.stem[0]
+        visual_encoder.trunk.alpha_conv = nn.Conv2d(
+            in_channels=1,
+            out_channels=stem_conv.out_channels,
+            kernel_size=stem_conv.kernel_size,
+            stride=stem_conv.stride,
+            padding=stem_conv.padding,
+            bias=False
+        )
+
+        # modify the forward of visual_encoder.trunk
+        def trunk_forward(self, x, alpha):
+            # self.forward_features
+            x = self.stem(x) + self.alpha_conv(alpha)
+            x = self.stages(x)
+            x = self.norm_pre(x)
+
+            x = self.forward_head(x)
+            return x
+
+        visual_encoder.trunk.forward = types.MethodType(trunk_forward, visual_encoder.trunk)
+
+        # modify the forward of visual_encoder
+        def visual_forward(self, x, alpha):
+            x = self.trunk(x, alpha)
+            x = self.head(x)
+            return x
+
+        visual_encoder.forward = types.MethodType(visual_forward, visual_encoder)
+
+        return model
 
 
 def _download(url: str, root: str):
@@ -57,7 +103,8 @@ def _download(url: str, root: str):
             warnings.warn(f"{download_target} exists, but the SHA256 checksum does not match; re-downloading the file")
 
     with urllib.request.urlopen(url) as source, open(download_target, "wb") as output:
-        with tqdm(total=int(source.info().get("Content-Length")), ncols=80, unit='iB', unit_scale=True, unit_divisor=1024) as loop:
+        with tqdm(total=int(source.info().get("Content-Length")), ncols=80, unit='iB', unit_scale=True,
+                  unit_divisor=1024) as loop:
             while True:
                 buffer = source.read(8192)
                 if not buffer:
@@ -91,7 +138,9 @@ def available_models() -> List[str]:
     return list(_MODELS.keys())
 
 
-def load(name: str, alpha_vision_ckpt_pth="None", device: Union[str, torch.device] = "cuda" if torch.cuda.is_available() else "cpu", jit: bool = False, download_root: str = None, lora_adapt=False, rank=16):
+def load(name: str, alpha_vision_ckpt_pth="None",
+         device: Union[str, torch.device] = "cuda" if torch.cuda.is_available() else "cpu", jit: bool = False,
+         download_root: str = None, lora_adapt=False, rank=16):
     """Load a CLIP model
 
     Parameters
@@ -119,6 +168,11 @@ def load(name: str, alpha_vision_ckpt_pth="None", device: Union[str, torch.devic
     preprocess : Callable[[PIL.Image], torch.Tensor]
         A torchvision transform that converts a PIL image into a tensor that the returned model can take as its input
     """
+    # load open-clip
+    if name in _OPEN_CLIPS:
+        model = load_open_clip(name)
+        return model, _transform(model.visual.image_size[0])
+
     if name in _MODELS:
         model_path = _download(_MODELS[name], download_root or os.path.expanduser("~/.cache/clip"))
     elif os.path.isfile(name):
@@ -144,7 +198,7 @@ def load(name: str, alpha_vision_ckpt_pth="None", device: Union[str, torch.devic
             model.float()
         if alpha_vision_ckpt_pth != "None":
             model.visual.load_state_dict(torch.load(alpha_vision_ckpt_pth))
-            model.eval() # merge lora params if exists (for inference only)
+            model.eval()  # merge lora params if exists (for inference only)
         return model, _transform(model.visual.input_resolution)
 
     # patch the device names
@@ -207,7 +261,8 @@ def load(name: str, alpha_vision_ckpt_pth="None", device: Union[str, torch.devic
     return model, _transform(model.input_resolution.item())
 
 
-def tokenize(texts: Union[str, List[str]], context_length: int = 77, truncate: bool = True) -> Union[torch.IntTensor, torch.LongTensor]:
+def tokenize(texts: Union[str, List[str]], context_length: int = 77, truncate: bool = True) -> Union[
+    torch.IntTensor, torch.LongTensor]:
     """
     Returns the tokenized representation of given input string(s)
 

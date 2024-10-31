@@ -357,7 +357,7 @@ if __name__ == "__main__":
     import warnings
     warnings.filterwarnings("ignore")
     parser = argparse.ArgumentParser(description='params')
-    parser.add_argument('--model_name', default='ViT-L/14', type=str)
+    parser.add_argument('--model_name', default='/mnt/shared/unibench/models/open-clip/CLIP-convnext_base_w-laion2B-s13B-b82K/open_clip_pytorch_model.bin', type=str)
     parser.add_argument('--hi_res', default=False, type=bool)
     parser.add_argument('--lr', default=2e-4, type=float, help='lr.')
     parser.add_argument('--weight_decay', default=2e-2, type=float, help='wd.')
